@@ -71,7 +71,7 @@ nav.tabs button.on{color:var(--brand);font-weight:600}
 <input type="file" id="filePick" hidden>
 <script>
 'use strict';
-const APP_ID='AccountRegister', VERSION='1.0', LOCK_MIN=5;
+const APP_ID='AccountRegister', VERSION='1.1', LOCK_MIN=5;
 /* ---------- helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -87,6 +87,7 @@ const daysBetween=(a,b)=>Math.round((parseIso(b)-parseIso(a))/864e5);
 const uid=()=>crypto.randomUUID?crypto.randomUUID():Date.now().toString(36)+Math.random().toString(36).slice(2);
 const nowIso=()=>new Date().toISOString();
 function parseMoney(v){ let s=String(v||'').trim().replace(/[$,\s]/g,''); if(!s||!/^\d*\.?\d*$/.test(s)||s==='.') return NaN; return Math.round(parseFloat(s)*100); }
+function firstJSON(text){ try{ return JSON.parse(text); }catch(e){} const s=String(text||''), st=s.indexOf('{'); if(st<0) throw new Error('no JSON'); let d=0,q=false,x=false; for(let i=st;i<s.length;i++){ const c=s[i]; if(q){ if(x) x=false; else if(c==='\\') x=true; else if(c==='"') q=false; continue; } if(c==='"') q=true; else if(c==='{') d++; else if(c==='}'&&--d===0) return JSON.parse(s.slice(st,i+1)); } throw new Error('incomplete JSON'); }
 function toast(m,ms=2600){ const t=$('#toast'); t.textContent=m; t.hidden=false; clearTimeout(toast.t); toast.t=setTimeout(()=>t.hidden=true,ms); }
 const byName=(a,b)=>a.localeCompare(b,undefined,{sensitivity:'base'});
 const sum=(a,f)=>a.reduce((s,x)=>s+f(x),0);
@@ -227,7 +228,7 @@ function sheet(html){ $('#sheet').innerHTML=html; $('#modal').hidden=false; }
 function closeSheet(){ $('#modal').hidden=true; }
 function confirmSheet(title,body,ok,fn){ sheet(`<h3>${esc(title)}</h3><p class="muted">${esc(body)}</p><button class="btn" id="sOk">${esc(ok)}</button><button class="btn sec" id="sNo">Cancel</button>`); $('#sOk').onclick=()=>{closeSheet();fn();}; $('#sNo').onclick=closeSheet; }
 /* ---------- load / unlock / lock ---------- */
-function pickRegister(){ const inp=$('#filePick'); inp.value=''; inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; let env; try{ env=JSON.parse(await f.text()); }catch(e){ env=null; }
+function pickRegister(){ const inp=$('#filePick'); inp.value=''; inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; let env; try{ env=firstJSON(await f.text()); }catch(e){ env=null; }
     if(!env||env.app!==APP_ID||!env.data||env.kind==='inbox') return toast('That is not your register-data.json file. Pick the register file from your Account Register folder.',4500);
     await kvSet('regText',JSON.stringify(env)); await kvSet('regName',f.name); P.env=env; P.fileName=f.name;
     if(P.key){ // already unlocked: reopen with the stored key material by asking again is safer; lock and re-unlock

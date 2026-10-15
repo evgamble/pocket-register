@@ -64,14 +64,14 @@ nav.tabs button.on{color:var(--brand);font-weight:600}
 <nav class="tabs" id="tabs" hidden>
   <button data-tab="home" class="on"><b>&#9673;</b>Balances</button>
   <button data-tab="add"><b>&#43;</b>Add</button>
-  <button data-tab="outbox"><b>&#8679;</b>Send<span id="obBadge"></span></button>
+  <button data-tab="outbox"><b>&#8679;</b>Pending<span id="obBadge"></span></button>
 </nav>
 <div id="toast" class="toast" hidden></div>
 <div id="modal" class="modal" hidden><div class="sheet" id="sheet"></div></div>
 <input type="file" id="filePick" hidden>
 <script>
 'use strict';
-const APP_ID='AccountRegister', VERSION='1.1', LOCK_MIN=5;
+const APP_ID='AccountRegister', VERSION='2.0', LOCK_MIN=5;
 /* ---------- helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -114,7 +114,8 @@ async function kvSet(k,v){ try{ const db=await idb(); await new Promise(res=>{ c
 /* ---------- register logic (mirrors the desktop) ---------- */
 const DEFAULT_GROUP={'Checking':'cash','Savings':'cash','Money Market':'cash','Online':'cash','Cash':'cash','Asset':'cash','Debit Card':'cash','Credit Card':'credit','Credit Line':'credit','Loan':'loans','Personal Loan':'loans','Mortgage':'loans','Liability':'bills','Bill':'bills'};
 const GROUPS=[{key:'cash',name:'Cash & Banking'},{key:'credit',name:'Credit/Debit'},{key:'loans',name:'Loans'},{key:'bills',name:'Bills'}];
-const P={env:null,data:null,key:null,user:null,queue:[],tab:'home',fileName:''};
+const P={env:null,data:null,key:null,user:null,queue:[],tab:'home',fileName:'',handle:null,live:false,syncing:false};
+const FSA=typeof window.showOpenFilePicker==='function';
 const groupOf=type=>(P.data.lists.acctTypes||[]).find(t=>t.name===type)?.group||DEFAULT_GROUP[type]||'cash';
 const isLiab=a=>groupOf(a.type)!=='cash';
 const acctById=id=>P.data.accounts.find(a=>a.id===id);
@@ -137,7 +138,7 @@ function dueOf(a){
 }
 const listNames=k=>(P.data.lists[k]||[]).filter(x=>!x.hidden).map(x=>x.name).sort(byName);
 /* ---------- screens ---------- */
-function render(){ const v=VIEWS[P.data?P.tab:'lock'](); $('#main').innerHTML=v.html; v.after&&v.after(); $('#tabs').hidden=!P.data; $('#btnLock').hidden=!P.data; $$('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===P.tab)); const n=P.data?P.queue.filter(e=>!imported().has(e.id)&&!e.sentAt).length:0; $('#obBadge').innerHTML=n?`<span class="badge">${n}</span>`:''; window.scrollTo(0,0); }
+function render(){ const v=VIEWS[P.data?P.tab:'lock'](); $('#main').innerHTML=v.html; v.after&&v.after(); $('#tabs').hidden=!P.data; $('#btnLock').hidden=!P.data; $$('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===P.tab)); const n=P.data?waiting().filter(e=>P.live||!e.sentAt).length:0; $('#obBadge').innerHTML=n?`<span class="badge">${n}</span>`:''; window.scrollTo(0,0); }
 const VIEWS={};
 VIEWS.lock=()=>({html:`<div class="card lockcard">
   <h2>${P.env?'Unlock your register':'Welcome'}</h2>
@@ -145,7 +146,8 @@ VIEWS.lock=()=>({html:`<div class="card lockcard">
     <form id="fLogin" autocomplete="on"><label>Username<input id="lUser" name="username" autocomplete="username" autocapitalize="none" value="${esc(P.lastUser||'')}"></label>
     <label>Passphrase<input id="lPass" name="password" type="password" autocomplete="current-password"></label>
     <div class="err" id="lErr"></div><button class="btn" id="lGo">Unlock</button></form>
-    <button class="btn sec" id="lLoad">Load a newer register file</button>`
+    ${P.handle?`<p class="small muted">Unlocking opens the latest copy from OneDrive.</p><button class="btn sec" id="lLoad">Use a different register file</button>`
+      :`${FSA?`<div class="note" style="margin-top:12px"><b>One-time step:</b> tap <b>Connect register file</b> and pick register-data.json in OneDrive again. After that, entries save straight into your register with no Send step.</div>`:''}<button class="btn sec" id="lLoad">${FSA?'Connect register file':'Load a newer register file'}</button>`}`
   :`<p class="muted" style="margin-top:0">Pocket Register shows your balances and lets you add transactions on the go. It works with the encrypted register-data.json file your computer keeps in OneDrive.</p>
     <ol class="small muted" style="padding-left:18px"><li>Tap <b>Load register file</b>.</li><li>In the file picker, choose OneDrive, open your Account Register folder, and pick <b>register-data.json</b>.</li><li>Unlock with the same username and passphrase you use on your computer.</li></ol>
     <button class="btn" id="lLoad">Load register file</button>`}
@@ -160,12 +162,12 @@ VIEWS.home=()=>{
       return `<div class="row" data-add="${a.id}"><div><div class="nm">${esc(a.name)}</div><div class="sub">${esc(a.type)}${pend?` · includes ${pend} phone entr${pend===1?'y':'ies'}`:''}</div></div><div class="num">${money(balance(a))}</div></div>`; }).join('')}</div>`; }).join('');
   return {html:`<div class="card"><div class="small muted">Net worth</div><div class="big">${money(assets-owed)}</div>
       <div class="two small" style="margin-top:6px"><div>Have <b>${money(assets)}</b></div><div class="num">Owe <b>${money(owed)}</b></div></div>
-      <div class="small muted" style="margin-top:8px">From the register saved ${esc(new Date(P.env.saved).toLocaleString())}${w.length?`, plus ${w.length} phone entr${w.length===1?'y':'ies'}`:''}.</div></div>
+      <div class="small muted" style="margin-top:8px">${P.live?'Up to date with your register':'From the register'} saved ${esc(new Date(P.env.saved).toLocaleString())}${w.length?`, plus ${w.length} entr${w.length===1?'y':'ies'} not saved to it yet`:''}.</div></div>
     ${dues.length?`<div class="card"><h2>Due in the next 14 days</h2>${dues.map(x=>{ const days=daysBetween(today(),x.d.date); return `<div class="row"><div><div class="nm">${esc(x.a.name)}</div><div class="sub">${days<0?'<span class="tag bad">Past due</span>':days===0?'Due today':`Due ${fmtDate(x.d.date)} · in ${days} day${days===1?'':'s'}`}</div></div><div class="num">${x.d.amt?money(x.d.amt):''}<div class="sub">owed ${money(x.bal)}</div></div></div>`; }).join('')}</div>`:''}
     ${groups}
-    <button class="btn sec" id="hLoad">Load a newer register file</button>
+    ${P.live?`<button class="btn sec" id="hRefresh">Refresh</button>`:`<button class="btn sec" id="hLoad">${FSA?'Connect register file':'Load a newer register file'}</button>`}
     <p class="small muted center">Tap an account to add an entry to it.</p>`,
-  after(){ $('#hLoad').onclick=pickRegister; $$('[data-add]').forEach(r=>r.onclick=()=>{ P.addFor=r.dataset.add; go('add'); }); }};
+  after(){ if($('#hLoad')) $('#hLoad').onclick=pickRegister; if($('#hRefresh')) $('#hRefresh').onclick=async()=>{ const r=await syncNow(); if(r.ok) toast('Up to date.'); }; $$('[data-add]').forEach(r=>r.onclick=()=>{ P.addFor=r.dataset.add; go('add'); }); }};
 };
 VIEWS.add=()=>{
   const accts=openAccounts(), sel=P.addFor||P.data.settings?.defaultAccountId||accts[0]?.id; P.addFor=null;
@@ -183,8 +185,8 @@ VIEWS.add=()=>{
     <label>Class</label><select id="aCls">${opt(listNames('classes'),'')}</select>
     <label>Memo</label><input id="aMemo">
     <div class="err" id="aErr"></div>
-    <button class="btn" id="aSave">Save on this phone</button></form>
-    <p class="small muted">Saved entries wait on the Send tab until you send them to your computer.</p></div>`,
+    <button class="btn" id="aSave">Save</button></form>
+    ${P.live?'':'<p class="small muted">Entries wait on the Pending tab until they reach your register.</p>'}</div>`,
   after(){
     const st={dir:'out',mode:'payee'}, f=$('#fAdd');
     const syncAcct=()=>{ const a=acctById($('#aAcct').value); const L=a&&isLiab(a);
@@ -204,7 +206,10 @@ VIEWS.add=()=>{
       const T=st.mode==='transfer';
       const entry={id:'M-'+uid(), created:nowIso(), accountId:$('#aAcct').value, date:$('#aDate').value, amount: st.dir==='out'?-amt:amt,
         payee:T?'':$('#aPayee').value.trim(), counterAccountId:T?$('#aCounter').value:'', category:$('#aCat').value, cls:$('#aCls').value, type:$('#aType').value, memo:$('#aMemo').value.trim()};
-      P.queue.push(entry); await saveQueue(); toast(`Saved. ${waiting().filter(e=>!e.sentAt).length} waiting to send.`); go('home'); };
+      P.queue.push(entry); await saveQueue(); $('#aSave').disabled=true; $('#aSave').textContent='Saving…';
+      if(P.live){ const r=await syncNow(); toast(r.ok?'Saved to your register.':'Saved on this phone. It will go into your register when it can be reached.',r.ok?2600:4500); }
+      else toast('Saved on this phone. See the Pending tab.');
+      go('home'); };
   }};
 };
 VIEWS.outbox=()=>{
@@ -212,14 +217,15 @@ VIEWS.outbox=()=>{
   const line=e=>{ const a=acctById(e.accountId), c=e.counterAccountId?acctById(e.counterAccountId):null;
     return `<div class="row"><div><div class="nm">${esc(e.payee||(c?(e.amount<0?'To ':'From ')+c.name:'(no payee)'))}</div><div class="sub">${fmtDate(e.date)} · ${esc(a?.name||'?')}${e.category?' · '+esc(e.category):''}</div></div>
       <div class="num"><span class="${e.amount<0?'neg':'pos'}">${money(Math.abs(e.amount))}</span><div><button class="small" data-del="${e.id}" style="border:0;background:none;color:var(--neg);padding:4px 0">Remove</button></div></div></div>`; };
-  return {html:`<div class="card"><h2>Ready to send <small>${unsent.length}</small></h2>${unsent.map(line).join('')||'<p class="muted small">Nothing waiting. Add entries on the Add tab.</p>'}
-      ${unsent.length?`<button class="btn" id="oSend">Send ${unsent.length} to my computer</button>
-      <p class="small muted">Tap Send, choose <b>OneDrive</b>, and save the file in your <b>Account Register</b> folder. Your computer picks it up the next time you log in.</p>`:''}</div>
-    ${sent.length?`<div class="card"><h2>Sent, waiting for your computer <small>${sent.length}</small></h2>${sent.map(line).join('')}
-      <button class="btn sec" id="oResend">Send these again</button>
-      <p class="small muted">These drop off once you load a register file your computer saved after importing them.</p></div>`:''}`,
-  after(){ $$('[data-del]').forEach(b=>b.onclick=()=>confirmSheet('Remove this entry?','It has not reached your computer yet if it is still listed here.','Remove',async()=>{ P.queue=P.queue.filter(e=>e.id!==b.dataset.del); await saveQueue(); render(); }));
-    if($('#oSend')) $('#oSend').onclick=()=>sendEntries(unsent); if($('#oResend')) $('#oResend').onclick=()=>sendEntries(sent); }};
+  const del=()=>$$('[data-del]').forEach(b=>b.onclick=()=>confirmSheet('Remove this entry?','It has not been saved to your register yet.','Remove',async()=>{ P.queue=P.queue.filter(e=>e.id!==b.dataset.del); await saveQueue(); render(); }));
+  if(P.live || (FSA && P.handle)) return {html:`<div class="card"><h2>Not in your register yet <small>${w.length}</small></h2>${w.map(line).join('')||'<p class="muted small">Everything you entered is saved in your register.</p>'}
+      ${w.length?`<button class="btn" id="oSync">Save to my register now</button><div class="err" id="oErr">${esc(P.syncErr||'')}</div>`:''}</div>`,
+    after(){ del(); if($('#oSync')) $('#oSync').onclick=async()=>{ const r=await syncNow(true); if(r.ok){ toast('Saved to your register.'); go('home'); } else render(); }; }};
+  return {html:`${FSA?`<div class="note" style="margin-bottom:12px">Tap <b>Connect register file</b> on the Balances tab once, and entries will save straight into your register.</div>`:''}
+    <div class="card"><h2>Ready to send <small>${unsent.length}</small></h2>${unsent.map(line).join('')||'<p class="muted small">Nothing waiting.</p>'}
+      ${unsent.length?`<button class="btn" id="oSend">Send ${unsent.length} to my computer</button>`:''}</div>
+    ${sent.length?`<div class="card"><h2>Sent, waiting for your computer <small>${sent.length}</small></h2>${sent.map(line).join('')}<button class="btn sec" id="oResend">Send these again</button></div>`:''}`,
+  after(){ del(); if($('#oSend')) $('#oSend').onclick=()=>sendEntries(unsent); if($('#oResend')) $('#oResend').onclick=()=>sendEntries(sent); }};
 };
 function go(t){ P.tab=t; render(); }
 $$('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.tab));
@@ -228,7 +234,17 @@ function sheet(html){ $('#sheet').innerHTML=html; $('#modal').hidden=false; }
 function closeSheet(){ $('#modal').hidden=true; }
 function confirmSheet(title,body,ok,fn){ sheet(`<h3>${esc(title)}</h3><p class="muted">${esc(body)}</p><button class="btn" id="sOk">${esc(ok)}</button><button class="btn sec" id="sNo">Cancel</button>`); $('#sOk').onclick=()=>{closeSheet();fn();}; $('#sNo').onclick=closeSheet; }
 /* ---------- load / unlock / lock ---------- */
-function pickRegister(){ const inp=$('#filePick'); inp.value=''; inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; let env; try{ env=firstJSON(await f.text()); }catch(e){ env=null; }
+async function pickRegister(){
+  if(FSA){
+    let h; try{ [h]=await window.showOpenFilePicker({multiple:false}); }catch(e){ if(e.name!=='AbortError') toast('The file picker could not open.'); return; }
+    let env; try{ env=firstJSON(await (await h.getFile()).text()); }catch(e){ env=null; }
+    if(!env||env.app!==APP_ID||!env.data||env.kind==='inbox') return toast('That is not your register-data.json file. Pick the register file from your Account Register folder.',4500);
+    P.handle=h; await kvSet('regHandle',h); await kvSet('regText',JSON.stringify(env)); await kvSet('regName',h.name); P.env=env; P.fileName=h.name;
+    if(P.key){ P.data=null; P.key=null; P.live=false; toast('Register file connected. Unlock to continue.'); }
+    return render();
+  }
+  return pickRegisterFile(); }
+function pickRegisterFile(){ const inp=$('#filePick'); inp.value=''; inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; let env; try{ env=firstJSON(await f.text()); }catch(e){ env=null; }
     if(!env||env.app!==APP_ID||!env.data||env.kind==='inbox') return toast('That is not your register-data.json file. Pick the register file from your Account Register folder.',4500);
     await kvSet('regText',JSON.stringify(env)); await kvSet('regName',f.name); P.env=env; P.fileName=f.name;
     if(P.key){ // already unlocked: reopen with the stored key material by asking again is safer; lock and re-unlock
@@ -237,6 +253,9 @@ function pickRegister(){ const inp=$('#filePick'); inp.value=''; inp.onchange=as
 async function unlock(){
   const user=$('#lUser').value.trim(), pass=$('#lPass').value; if(!user||!pass) return $('#lErr').textContent='Enter your username and passphrase.';
   $('#lGo').disabled=true; $('#lGo').textContent='Unlocking…';
+  P.live=false;
+  if(P.handle){ try{ let perm=await P.handle.queryPermission({mode:'readwrite'}); if(perm!=='granted') perm=await P.handle.requestPermission({mode:'readwrite'});
+      if(perm==='granted'){ const env=firstJSON(await (await P.handle.getFile()).text()); if(env&&env.app===APP_ID&&env.data){ P.env=env; P.live=true; await kvSet('regText',JSON.stringify(env)); } } }catch(e){ P.live=false; } }
   try{ const r=await openRegister(P.env,user,pass); P.data=r.data; P.key=r.key; P.user=user; await kvSet('lastUser',user); P.lastUser=user; }
   catch(e){ await new Promise(z=>setTimeout(z,600)); $('#lErr').textContent=e.message; $('#lGo').disabled=false; $('#lGo').textContent='Unlock'; return; }
   P.data.lists ||= {}; P.data.txns ||= []; P.data.accounts ||= [];
@@ -244,12 +263,65 @@ async function unlock(){
   if(sealed){ try{ P.queue=await openJSON(sealed,P.key); }catch(e){ toast('Saved phone entries could not be opened with this register.',4000); } }
   const before=P.queue.length, done=imported(); P.queue=P.queue.filter(e=>!done.has(e.id)); if(P.queue.length!==before){ await saveQueue(); toast(`${before-P.queue.length} phone entr${before-P.queue.length===1?'y is':'ies are'} now on your computer.`); }
   P.lastActive=Date.now(); P.tab='home'; render();
+  if(P.live && waiting().length){ const r=await syncNow(); if(r.ok && r.added) toast(`${r.added} waiting entr${r.added===1?'y was':'ies were'} saved to your register.`,4000); }
+  else if(P.handle && !P.live) toast('Could not reach your register file. Entries will wait on this phone.',4500);
 }
 async function saveQueue(){ await kvSet('queue:'+normUser(P.user), await sealJSON(P.queue,P.key)); }
-function lock(msg){ P.data=null; P.key=null; P.queue=[]; closeSheet(); render(); if(msg) toast(msg); }
+function lock(msg){ P.data=null; P.key=null; P.queue=[]; P.live=false; closeSheet(); render(); if(msg) toast(msg); }
 ['touchstart','keydown','mousedown','scroll'].forEach(ev=>document.addEventListener(ev,()=>{P.lastActive=Date.now();},{passive:true,capture:true}));
 setInterval(()=>{ if(P.data && Date.now()-(P.lastActive||0) > LOCK_MIN*60000) lock(`Locked after ${LOCK_MIN} minutes without activity.`); },10000);
-document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && P.data && Date.now()-(P.lastActive||0) > LOCK_MIN*60000) lock(`Locked after ${LOCK_MIN} minutes without activity.`); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState!=='visible' || !P.data) return;
+  if(Date.now()-(P.lastActive||0) > LOCK_MIN*60000) return lock(`Locked after ${LOCK_MIN} minutes without activity.`);
+  if(P.live) syncNow().then(r=>{ if(r.ok && P.tab==='home' && $('#modal').hidden) render(); }); });
+/* ---------- save straight into register-data.json ---------- */
+// Reads the latest copy of the register, adds entries made on this phone (each once, matched by its phone ID),
+// and writes it back, encrypted with the same data key and logins. Done in one quick step to avoid overwriting
+// changes from your computer; the computer app (v6.2+) picks up the new copy when you return to it.
+function mergeEntries(d, entries){
+  d.meta ||= {}; d.txns ||= []; d.lists ||= {}; for(const k of ['categories','classes','types','payees']) d.lists[k] ||= [];
+  const maxSeq=Math.max(0,...d.txns.map(t=>t.seq||0)); if(!d.meta.nextTxn || d.meta.nextTxn<=maxSeq) d.meta.nextTxn=maxSeq+1;
+  const nextId=()=>{ const n=d.meta.nextTxn++; return {id:'T-'+String(n).padStart(6,'0'), seq:n}; };
+  const ensure=(k,name)=>{ name=(name||'').trim(); if(!name) return; const L=d.lists[k], hit=L.find(x=>x.name.toLowerCase()===name.toLowerCase()); if(hit){ if(hit.hidden) hit.hidden=false; return; } L.push(k==='payees'?{name,category:'',cls:'',type:'',hidden:false}:{name,hidden:false}); };
+  const seen=new Set(d.txns.map(t=>t.mobileId).filter(Boolean)); let added=0;
+  for(const e of entries){
+    if(!e||!e.id||seen.has(e.id)) continue; const a=d.accounts.find(x=>x.id===e.accountId); if(!a) continue;
+    const amount=Math.round(Number(e.amount)||0); if(!amount) continue;
+    ensure('categories',e.category); ensure('classes',e.cls); ensure('types',e.type);
+    const base={created:nowIso(),updated:nowIso(),source:'Mobile',status:'U',num:'',date:e.date||today(),category:e.category||'',cls:e.cls||'',type:e.type||'',memo:e.memo||''};
+    const rec={...nextId(),...base,accountId:a.id,amount,payee:e.payee||'',mobileId:e.id,transferId:null,counterAccountId:null};
+    const other=e.counterAccountId && d.accounts.find(x=>x.id===e.counterAccountId);
+    if(other){ rec.transferId='X-'+uid(); rec.counterAccountId=other.id; rec.payee=''; d.txns.push(rec,{...nextId(),...base,accountId:other.id,amount:-amount,payee:'',transferId:rec.transferId,counterAccountId:a.id}); }
+    else { d.txns.push(rec); if(rec.payee){ ensure('payees',rec.payee); const p=d.lists.payees.find(x=>x.name.toLowerCase()===rec.payee.toLowerCase()); Object.assign(p,{category:rec.category||p.category,cls:rec.cls||p.cls,type:(rec.type&&rec.type!=='Refund')?rec.type:p.type}); } }
+    seen.add(e.id); added++;
+  }
+  if(added) d.meta.updated=nowIso();
+  return added;
+}
+async function writeRegister(text){
+  const size=enc.encode(text).length;
+  for(let i=0;i<2;i++){ const w=await P.handle.createWritable({keepExistingData:false}); await w.write(text); try{ await w.truncate(size); }catch(e){} await w.close();
+    try{ if((await P.handle.getFile()).size===size) return; }catch(e){ return; } }
+}
+async function syncNow(interactive=false){
+  if(!P.handle || !P.key) return {ok:false};
+  if(P.syncing) return {ok:false};
+  P.syncing=true; P.syncErr='';
+  try{
+    if(!P.live){ let perm=await P.handle.queryPermission({mode:'readwrite'}); if(perm!=='granted' && interactive) perm=await P.handle.requestPermission({mode:'readwrite'}); if(perm!=='granted') throw new Error('Allow access to your register file to save.'); P.live=true; }
+    const env=firstJSON(await (await P.handle.getFile()).text());
+    if(!env||env.app!==APP_ID||!env.data) throw new Error('Your register file could not be read.');
+    let d; try{ d=JSON.parse(dec.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(env.iv)},P.key,unb64(env.data)))); }
+    catch(e){ throw new Error('Your register was changed in a way this phone cannot open. Lock and unlock to continue.'); }
+    d.accounts ||= [];
+    const pending=waiting(), added=mergeEntries(d,pending);
+    let cur=env;
+    if(added){ const sealed=await sealJSON(d,P.key); cur={app:APP_ID,format:2,saved:nowIso(),cipher:'AES-256-GCM',wraps:env.wraps,...sealed}; await writeRegister(JSON.stringify(cur)); }
+    P.env=cur; P.data=d; await kvSet('regText',JSON.stringify(cur));
+    const done=imported(); const before=P.queue.length; P.queue=P.queue.filter(e=>!done.has(e.id)); if(P.queue.length!==before) await saveQueue();
+    return {ok:true, added};
+  }catch(e){ P.syncErr=e.message||String(e); if(/Allow access|NotAllowed/i.test(P.syncErr)) P.live=false; return {ok:false, error:P.syncErr}; }
+  finally{ P.syncing=false; }
+}
 /* ---------- send to the computer ---------- */
 async function sendEntries(list){
   const d=new Date(), name=`register-inbox-${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.json`;
@@ -267,6 +339,7 @@ async function sendEntries(list){
 }
 /* ---------- start ---------- */
 (async()=>{
+  P.handle=FSA?((await kvGet('regHandle'))||null):null;
   const t=await kvGet('regText'); if(t){ try{ P.env=JSON.parse(t); P.fileName=(await kvGet('regName'))||'register-data.json'; }catch(e){} }
   P.lastUser=(await kvGet('lastUser'))||''; render();
   if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});

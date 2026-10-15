@@ -71,7 +71,7 @@ nav.tabs button.on{color:var(--brand);font-weight:600}
 <input type="file" id="filePick" hidden>
 <script>
 'use strict';
-const APP_ID='AccountRegister', VERSION='2.0', LOCK_MIN=5;
+const APP_ID='AccountRegister', VERSION='2.1', LOCK_MIN=5;
 /* ---------- helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -138,7 +138,7 @@ function dueOf(a){
 }
 const listNames=k=>(P.data.lists[k]||[]).filter(x=>!x.hidden).map(x=>x.name).sort(byName);
 /* ---------- screens ---------- */
-function render(){ const v=VIEWS[P.data?P.tab:'lock'](); $('#main').innerHTML=v.html; v.after&&v.after(); $('#tabs').hidden=!P.data; $('#btnLock').hidden=!P.data; $$('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===P.tab)); const n=P.data?waiting().filter(e=>P.live||!e.sentAt).length:0; $('#obBadge').innerHTML=n?`<span class="badge">${n}</span>`:''; window.scrollTo(0,0); }
+function render(){ const v=VIEWS[P.data?P.tab:'lock'](); $('#main').innerHTML=v.html; v.after&&v.after(); $('#tabs').hidden=!P.data; $('#btnLock').hidden=!P.data; $$('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===(P.tab==='acct'?'home':P.tab))); const n=P.data?waiting().filter(e=>P.live||!e.sentAt).length:0; $('#obBadge').innerHTML=n?`<span class="badge">${n}</span>`:''; window.scrollTo(0,0); }
 const VIEWS={};
 VIEWS.lock=()=>({html:`<div class="card lockcard">
   <h2>${P.env?'Unlock your register':'Welcome'}</h2>
@@ -159,18 +159,62 @@ VIEWS.home=()=>{
   const dues=accts.filter(isLiab).map(a=>({a,d:dueOf(a),bal:balance(a)})).filter(x=>x.d&&x.d.date<=addDays(today(),14)&&(x.bal>0||x.d.amt)).sort((x,y)=>x.d.date<y.d.date?-1:1);
   const groups=GROUPS.map(g=>{ const list=accts.filter(a=>groupOf(a.type)===g.key); if(!list.length) return ''; const L=g.key!=='cash';
     return `<div class="card"><h2>${g.name}<small>${L?'owed':'balance'} ${money(sum(list,balance))}</small></h2>${list.map(a=>{ const pend=w.filter(e=>e.accountId===a.id||e.counterAccountId===a.id).length;
-      return `<div class="row" data-add="${a.id}"><div><div class="nm">${esc(a.name)}</div><div class="sub">${esc(a.type)}${pend?` · includes ${pend} phone entr${pend===1?'y':'ies'}`:''}</div></div><div class="num">${money(balance(a))}</div></div>`; }).join('')}</div>`; }).join('');
+      return `<div class="row" data-add="${a.id}" style="cursor:pointer"><div><div class="nm">${esc(a.name)}</div><div class="sub">${esc(a.type)}${pend?` · includes ${pend} phone entr${pend===1?'y':'ies'}`:''}</div></div><div class="num">${money(balance(a))} <span class="muted">&rsaquo;</span></div></div>`; }).join('')}</div>`; }).join('');
   return {html:`<div class="card"><div class="small muted">Net worth</div><div class="big">${money(assets-owed)}</div>
       <div class="two small" style="margin-top:6px"><div>Have <b>${money(assets)}</b></div><div class="num">Owe <b>${money(owed)}</b></div></div>
       <div class="small muted" style="margin-top:8px">${P.live?'Up to date with your register':'From the register'} saved ${esc(new Date(P.env.saved).toLocaleString())}${w.length?`, plus ${w.length} entr${w.length===1?'y':'ies'} not saved to it yet`:''}.</div></div>
     ${dues.length?`<div class="card"><h2>Due in the next 14 days</h2>${dues.map(x=>{ const days=daysBetween(today(),x.d.date); return `<div class="row"><div><div class="nm">${esc(x.a.name)}</div><div class="sub">${days<0?'<span class="tag bad">Past due</span>':days===0?'Due today':`Due ${fmtDate(x.d.date)} · in ${days} day${days===1?'':'s'}`}</div></div><div class="num">${x.d.amt?money(x.d.amt):''}<div class="sub">owed ${money(x.bal)}</div></div></div>`; }).join('')}</div>`:''}
     ${groups}
     ${P.live?`<button class="btn sec" id="hRefresh">Refresh</button>`:`<button class="btn sec" id="hLoad">${FSA?'Connect register file':'Load a newer register file'}</button>`}
-    <p class="small muted center">Tap an account to add an entry to it.</p>`,
-  after(){ if($('#hLoad')) $('#hLoad').onclick=pickRegister; if($('#hRefresh')) $('#hRefresh').onclick=async()=>{ const r=await syncNow(); if(r.ok) toast('Up to date.'); }; $$('[data-add]').forEach(r=>r.onclick=()=>{ P.addFor=r.dataset.add; go('add'); }); }};
+    <p class="small muted center">Tap an account to see its register.</p>`,
+  after(){ if($('#hLoad')) $('#hLoad').onclick=pickRegister; if($('#hRefresh')) $('#hRefresh').onclick=async()=>{ const r=await syncNow(); if(r.ok) toast('Up to date.'); }; $$('[data-add]').forEach(r=>r.onclick=()=>{ P.acct=r.dataset.add; P.regQ=''; P.regShow=50; go('acct'); }); }};
+};
+VIEWS.acct=()=>{
+  const a=acctById(P.acct); if(!a){ P.tab='home'; return VIEWS.home(); }
+  const L=isLiab(a), sign=L?-1:1;
+  // posted transactions plus entries still waiting on this phone
+  const rows=P.data.txns.filter(t=>t.accountId===a.id).map(t=>({...t}));
+  for(const e of waiting()){
+    if(e.accountId===a.id) rows.push({id:e.id,date:e.date,amount:e.amount,payee:e.payee,counterAccountId:e.counterAccountId||null,transferId:e.counterAccountId?'p':null,category:e.category,cls:e.cls,type:e.type,memo:e.memo,status:'U',pending:true,seq:1e12});
+    if(e.counterAccountId===a.id) rows.push({id:e.id+'-x',date:e.date,amount:-e.amount,payee:'',counterAccountId:e.accountId,transferId:'p',category:e.category,cls:e.cls,type:e.type,memo:e.memo,status:'U',pending:true,seq:1e12});
+  }
+  rows.sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:(x.seq||0)-(y.seq||0));
+  let run=a.openBal||0; for(const r of rows){ if(inBalance(r,a)) run+=sign*r.amount; r.bal=inBalance(r,a)?run:null; }
+  const party=r=>r.counterAccountId?`${r.amount<0?'To':'From'} ${esc(acctById(r.counterAccountId)?.name||'another account')}`:esc(r.payee||'(no payee)');
+  const q=(P.regQ||'').trim().toLowerCase();
+  let list=rows.slice().reverse(); if(q) list=list.filter(r=>[r.payee,r.category,r.cls,r.type,r.memo,acctById(r.counterAccountId)?.name,String(Math.abs(r.amount)/100)].some(v=>String(v||'').toLowerCase().includes(q)));
+  const shown=list.slice(0,P.regShow||50);
+  const cleared=sum(rows.filter(r=>r.status==='C'||r.status==='R').filter(r=>inBalance(r,a)),r=>sign*r.amount)+(a.openBal||0);
+  const st=r=>r.pending?'<span class="tag warn">Pending</span>':r.status==='R'?'<span class="tag good">Reconciled</span>':r.status==='C'?'<span class="tag good">Cleared</span>':'';
+  P.regRows=rows;
+  return {html:`<button class="btn sec" id="rBack" style="margin:0 0 12px;padding:10px">&lsaquo; Balances</button>
+    <div class="card"><div class="small muted">${esc(a.type)}${a.institution?' · '+esc(a.institution):''}</div><div style="font-size:19px;font-weight:700">${esc(a.name)}</div>
+      <div class="two" style="margin-top:8px"><div><div class="small muted">${L?'Owed':'Balance'}</div><div class="big" style="font-size:22px">${money(balance(a))}</div></div>
+      <div class="num"><div class="small muted">Cleared</div><div style="font-size:17px;font-weight:600">${money(cleared)}</div></div></div>
+      <button class="btn" id="rAdd">+ Add entry</button></div>
+    <div class="card"><h2>Register <small>${list.length} entr${list.length===1?'y':'ies'}</small></h2>
+      <input id="rQ" type="search" placeholder="Search payee, category, memo, amount" value="${esc(P.regQ||'')}" style="margin-bottom:6px">
+      ${shown.map((r,i)=>`<div class="row" data-tx="${esc(r.id)}" style="cursor:pointer;align-items:flex-start"><div style="min-width:0"><div class="nm" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${party(r)}</div>
+          <div class="sub">${fmtDate(r.date)}${r.category?' · '+esc(r.category):''} ${st(r)}</div></div>
+        <div class="num"><div class="${(sign*r.amount)<0?'neg':'pos'}">${(sign*r.amount)<0?'−':'+'}${money(Math.abs(r.amount))}</div><div class="sub">${r.bal==null?'before opening':money(r.bal)}</div></div></div>`).join('')
+        || `<p class="muted small">${q?'No entries match.':'No entries yet.'}</p>`}
+      ${list.length>shown.length?`<button class="btn sec" id="rMore">Show more (${list.length-shown.length} older)</button>`:''}
+      ${a.openBal?`<div class="row"><div><div class="nm">Opening balance</div><div class="sub">${a.openDate?fmtDate(a.openDate):''}</div></div><div class="num">${money(a.openBal)}</div></div>`:''}
+    </div>`,
+  after(){
+    $('#rBack').onclick=()=>go('home'); $('#rAdd').onclick=()=>{ P.addFor=a.id; go('add'); };
+    if($('#rMore')) $('#rMore').onclick=()=>{ P.regShow=(P.regShow||50)+100; const y=window.scrollY; render(); window.scrollTo(0,y); };
+    let tm; $('#rQ').oninput=e=>{ clearTimeout(tm); tm=setTimeout(()=>{ P.regQ=e.target.value; P.regShow=50; render(); const i=$('#rQ'); i.focus(); i.setSelectionRange(i.value.length,i.value.length); },250); };
+    $$('[data-tx]').forEach(el=>el.onclick=()=>{ const r=P.regRows.find(x=>x.id===el.dataset.tx); if(!r) return;
+      const f=(k,v)=>v?`<div class="row"><div class="muted small">${k}</div><div class="num" style="white-space:normal;max-width:65%">${v}</div></div>`:'';
+      sheet(`<h3>${party(r)}</h3><div class="big ${(sign*r.amount)<0?'neg':'pos'}" style="font-size:24px">${(sign*r.amount)<0?'−':'+'}${money(Math.abs(r.amount))}</div>
+        ${f('Date',fmtDate(r.date))}${f('Status',r.pending?'Pending (not in your register yet)':r.status==='R'?'Reconciled':r.status==='C'?'Cleared':'Uncleared')}${f('Type',esc(r.type))}${f('Category',esc(r.category))}${f('Class',esc(r.cls))}${f('Check #',esc(r.num))}${f('Memo',esc(r.memo))}${f('Statement due',r.dueDate?fmtDate(r.dueDate):'')}${f('Entered on',r.source==='Mobile'||r.pending?'Phone':'')}${f('ID',r.pending?'':esc(r.id))}
+        <p class="small muted">To change or delete an entry, use the Account Register on your computer.</p><button class="btn sec" id="sClose">Close</button>`);
+      $('#sClose').onclick=closeSheet; });
+  }};
 };
 VIEWS.add=()=>{
-  const accts=openAccounts(), sel=P.addFor||P.data.settings?.defaultAccountId||accts[0]?.id; P.addFor=null;
+  const accts=openAccounts(), sel=P.addFor||P.data.settings?.defaultAccountId||accts[0]?.id; P.backTo=P.addFor&&P.tab==='add'&&P.prevTab==='acct'?P.addFor:null; P.addFor=null;
   const opt=(arr,cur)=>`<option value="">(none)</option>`+arr.map(n=>`<option ${n===cur?'selected':''}>${esc(n)}</option>`).join('');
   return {html:`<div class="card"><h2>New transaction</h2>
     <form id="fAdd" autocomplete="off">
@@ -209,7 +253,7 @@ VIEWS.add=()=>{
       P.queue.push(entry); await saveQueue(); $('#aSave').disabled=true; $('#aSave').textContent='Saving…';
       if(P.live){ const r=await syncNow(); toast(r.ok?'Saved to your register.':'Saved on this phone. It will go into your register when it can be reached.',r.ok?2600:4500); }
       else toast('Saved on this phone. See the Pending tab.');
-      go('home'); };
+      if(P.backTo){ P.acct=P.backTo; P.backTo=null; go('acct'); } else go('home'); };
   }};
 };
 VIEWS.outbox=()=>{
@@ -227,7 +271,7 @@ VIEWS.outbox=()=>{
     ${sent.length?`<div class="card"><h2>Sent, waiting for your computer <small>${sent.length}</small></h2>${sent.map(line).join('')}<button class="btn sec" id="oResend">Send these again</button></div>`:''}`,
   after(){ del(); if($('#oSend')) $('#oSend').onclick=()=>sendEntries(unsent); if($('#oResend')) $('#oResend').onclick=()=>sendEntries(sent); }};
 };
-function go(t){ P.tab=t; render(); }
+function go(t){ P.prevTab=P.tab; P.tab=t; render(); }
 $$('#tabs button').forEach(b=>b.onclick=()=>go(b.dataset.tab));
 $('#btnLock').onclick=()=>lock('Locked.');
 function sheet(html){ $('#sheet').innerHTML=html; $('#modal').hidden=false; }
@@ -272,7 +316,7 @@ function lock(msg){ P.data=null; P.key=null; P.queue=[]; P.live=false; closeShee
 setInterval(()=>{ if(P.data && Date.now()-(P.lastActive||0) > LOCK_MIN*60000) lock(`Locked after ${LOCK_MIN} minutes without activity.`); },10000);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState!=='visible' || !P.data) return;
   if(Date.now()-(P.lastActive||0) > LOCK_MIN*60000) return lock(`Locked after ${LOCK_MIN} minutes without activity.`);
-  if(P.live) syncNow().then(r=>{ if(r.ok && P.tab==='home' && $('#modal').hidden) render(); }); });
+  if(P.live) syncNow().then(r=>{ if(r.ok && (P.tab==='home'||P.tab==='acct') && $('#modal').hidden) render(); }); });
 /* ---------- save straight into register-data.json ---------- */
 // Reads the latest copy of the register, adds entries made on this phone (each once, matched by its phone ID),
 // and writes it back, encrypted with the same data key and logins. Done in one quick step to avoid overwriting

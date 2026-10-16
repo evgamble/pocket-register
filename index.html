@@ -71,7 +71,8 @@ nav.tabs button.on{color:var(--brand);font-weight:600}
 <input type="file" id="filePick" hidden>
 <script>
 'use strict';
-const APP_ID='AccountRegister', VERSION='2.2', LOCK_MIN=5;
+const APP_ID='AccountRegister', VERSION='2.3';
+let LOCK_MIN=0; // 0 = stay signed in until Lock is tapped
 /* ---------- helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -186,9 +187,11 @@ VIEWS.home=()=>{
       <div class="small muted" style="margin-top:8px">${P.live?'Up to date with your register':'From the register'} saved ${esc(new Date(P.env.saved).toLocaleString())}${w.length?`, plus ${w.length} entr${w.length===1?'y':'ies'} not saved to it yet`:''}.</div></div>
     ${dues.length?`<div class="card"><h2>Due in the next 14 days</h2>${dues.map(x=>{ const days=daysBetween(today(),x.d.date); return `<div class="row"><div><div class="nm">${esc(x.a.name)}</div><div class="sub">${days<0?'<span class="tag bad">Past due</span>':days===0?'Due today':`Due ${fmtDate(x.d.date)} · in ${days} day${days===1?'':'s'}`}</div></div><div class="num">${x.d.amt?money(x.d.amt):''}<div class="sub">owed ${money(x.bal)}</div></div></div>`; }).join('')}</div>`:''}
     ${groups}
-    ${P.live?`<button class="btn sec" id="hRefresh">Refresh</button>`:`<button class="btn sec" id="hLoad">${FSA?'Connect register file':'Load a newer register file'}</button>`}
-    <p class="small muted center">Tap an account to see its register.</p>`,
-  after(){ if($('#hLoad')) $('#hLoad').onclick=pickRegister; if($('#hRefresh')) $('#hRefresh').onclick=async()=>{ const r=await syncNow(); if(r.ok) toast('Up to date.'); }; $$('[data-add]').forEach(r=>r.onclick=()=>{ P.acct=r.dataset.add; P.regQ=''; P.regShow=50; go('acct'); }); }};
+    ${P.live?`<button class="btn sec" id="hRefresh">Refresh</button>`:P.handle?`<button class="btn" id="hRefresh">Reconnect to your register</button><p class="small muted center">Tap to let Pocket Register save to your register file again.</p>`:`<button class="btn sec" id="hLoad">${FSA?'Connect register file':'Load a newer register file'}</button>`}
+    <p class="small muted center">Tap an account to see its register.</p>
+    <div class="card" style="margin-top:14px"><label style="margin-top:0">Lock automatically</label><select id="hLock">${[[0,'Never (stay signed in until I tap Lock)'],[5,'After 5 minutes without use'],[15,'After 15 minutes without use'],[60,'After 1 hour without use']].map(([v,t])=>`<option value="${v}" ${v===LOCK_MIN?'selected':''}>${t}</option>`).join('')}</select></div>`,
+  after(){ if($('#hLoad')) $('#hLoad').onclick=pickRegister; if($('#hRefresh')) $('#hRefresh').onclick=async()=>{ const r=await syncNow(true); if(r.ok){ toast(r.added||r.applied?'Saved to your register.':'Up to date.'); render(); } else toast(P.syncErr||'Could not reach your register file.',4000); };
+    $('#hLock').onchange=async e=>{ LOCK_MIN=Number(e.target.value); await kvSet('autoLock',LOCK_MIN); touchSession(); toast(LOCK_MIN?`Will lock after ${LOCK_MIN===60?'1 hour':LOCK_MIN+' minutes'} without use.`:'Stays signed in until you tap Lock.'); }; $$('[data-add]').forEach(r=>r.onclick=()=>{ P.acct=r.dataset.add; P.regQ=''; P.regShow=50; go('acct'); }); }};
 };
 VIEWS.acct=()=>{
   const a=acctById(P.acct); if(!a){ P.tab='home'; return VIEWS.home(); }
@@ -381,20 +384,44 @@ async function unlock(){
       if(perm==='granted'){ const env=firstJSON(await (await P.handle.getFile()).text()); if(env&&env.app===APP_ID&&env.data){ P.env=env; P.live=true; await kvSet('regText',JSON.stringify(env)); } } }catch(e){ P.live=false; } }
   try{ const r=await openRegister(P.env,user,pass); P.data=r.data; P.key=r.key; P.user=user; await kvSet('lastUser',user); P.lastUser=user; }
   catch(e){ await new Promise(z=>setTimeout(z,600)); $('#lErr').textContent=e.message; $('#lGo').disabled=false; $('#lGo').textContent='Unlock'; return; }
+  await kvSet('session',{user, key:P.key, at:Date.now()}); try{ localStorage.removeItem('pr-locked'); }catch(e){}   // the key is non-extractable: usable here, never readable
+  await afterUnlock();
+}
+async function afterUnlock(){
+  const user=P.user;
   P.data.lists ||= {}; P.data.txns ||= []; P.data.accounts ||= [];
   const sealed=await kvGet('queue:'+normUser(user)); P.queue=[];
   if(sealed){ try{ P.queue=await openJSON(sealed,P.key); }catch(e){ toast('Saved phone entries could not be opened with this register.',4000); } }
   const before=P.queue.length, done=imported(); P.queue=P.queue.filter(e=>!done.has(e.id)); if(P.queue.length!==before){ await saveQueue(); toast(`${before-P.queue.length} phone entr${before-P.queue.length===1?'y is':'ies are'} now on your computer.`); }
   P.lastActive=Date.now(); P.tab='home'; render();
   if(P.live && (waiting().length||pendingOps().length)){ const r=await syncNow(); if(r.ok && r.added) toast(`${r.added} waiting entr${r.added===1?'y was':'ies were'} saved to your register.`,4000); }
-  else if(P.handle && !P.live) toast('Could not reach your register file. Entries will wait on this phone.',4500);
+  else if(P.handle && !P.live && !P.resumed) toast('Could not reach your register file. Entries will wait on this phone.',4500);
 }
+// Reopen the session saved on this phone (after a pull-to-refresh, reload or reopening the app)
+async function resumeSession(){
+  let locked=false; try{ locked=localStorage.getItem('pr-locked')==='1'; }catch(e){}
+  if(locked){ await kvSet('session',null); return false; }
+  const sess=await kvGet('session'); if(!sess || !sess.key || !P.env) return false;
+  if(LOCK_MIN && Date.now()-(sess.at||0) > LOCK_MIN*60000){ await kvSet('session',null); return false; }
+  let env=P.env;
+  P.live=false;
+  if(P.handle){ try{ if(await P.handle.queryPermission({mode:'readwrite'})==='granted'){ const e=firstJSON(await (await P.handle.getFile()).text()); if(e&&e.app===APP_ID&&e.data){ env=e; P.live=true; } } }catch(e){} }
+  let data; try{ data=JSON.parse(dec.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(env.iv)},sess.key,unb64(env.data)))); }
+  catch(e){ if(env!==P.env){ try{ env=P.env; P.live=false; data=JSON.parse(dec.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(env.iv)},sess.key,unb64(env.data)))); }catch(e2){} } }
+  if(!data){ await kvSet('session',null); return false; }   // the register's key changed: log in again
+  P.env=env; if(P.live) await kvSet('regText',JSON.stringify(env));
+  P.data=data; P.key=sess.key; P.user=sess.user; P.resumed=true;
+  await afterUnlock(); P.resumed=false;
+  return true;
+}
+let lastTouchSave=0;
+function touchSession(){ P.lastActive=Date.now(); if(P.data && P.key && Date.now()-lastTouchSave>30000){ lastTouchSave=Date.now(); kvSet('session',{user:P.user,key:P.key,at:Date.now()}); } }
 async function saveQueue(){ await kvSet('queue:'+normUser(P.user), await sealJSON(P.queue,P.key)); }
-function lock(msg){ P.data=null; P.key=null; P.queue=[]; P.live=false; closeSheet(); render(); if(msg) toast(msg); }
-['touchstart','keydown','mousedown','scroll'].forEach(ev=>document.addEventListener(ev,()=>{P.lastActive=Date.now();},{passive:true,capture:true}));
-setInterval(()=>{ if(P.data && Date.now()-(P.lastActive||0) > LOCK_MIN*60000) lock(`Locked after ${LOCK_MIN} minutes without activity.`); },10000);
+function lock(msg){ try{ localStorage.setItem('pr-locked','1'); }catch(e){} P.data=null; P.key=null; P.queue=[]; P.live=false; kvSet('session',null); closeSheet(); render(); if(msg) toast(msg); }
+['touchstart','keydown','mousedown','scroll'].forEach(ev=>document.addEventListener(ev,touchSession,{passive:true,capture:true}));
+setInterval(()=>{ if(P.data && LOCK_MIN && Date.now()-(P.lastActive||0) > LOCK_MIN*60000) lock(`Locked after ${LOCK_MIN} minutes without activity.`); },10000);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState!=='visible' || !P.data) return;
-  if(Date.now()-(P.lastActive||0) > LOCK_MIN*60000) return lock(`Locked after ${LOCK_MIN} minutes without activity.`);
+  if(LOCK_MIN && Date.now()-(P.lastActive||0) > LOCK_MIN*60000) return lock(`Locked after ${LOCK_MIN} minutes without activity.`);
   if(P.live) syncNow().then(r=>{ if(r.ok && (P.tab==='home'||P.tab==='acct') && $('#modal').hidden) render(); }); });
 /* ---------- save straight into register-data.json ---------- */
 // Reads the latest copy of the register, adds entries made on this phone (each once, matched by its phone ID),
@@ -467,9 +494,13 @@ async function sendEntries(list){
 (async()=>{
   P.handle=FSA?((await kvGet('regHandle'))||null):null;
   const t=await kvGet('regText'); if(t){ try{ P.env=JSON.parse(t); P.fileName=(await kvGet('regName'))||'register-data.json'; }catch(e){} }
-  P.lastUser=(await kvGet('lastUser'))||''; render();
-  if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
+  P.lastUser=(await kvGet('lastUser'))||''; LOCK_MIN=Number((await kvGet('autoLock'))||0);
+  try{ if(await resumeSession()) return regSW(); }catch(e){}
+  render(); regSW();
 })();
+function regSW(){
+  if('serviceWorker' in navigator && location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
 </script>
 </body>
 </html>

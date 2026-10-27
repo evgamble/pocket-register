@@ -71,7 +71,7 @@ nav.tabs button.on{color:var(--brand);font-weight:600}
 <input type="file" id="filePick" hidden>
 <script>
 'use strict';
-const APP_ID='AccountRegister', VERSION='2.3';
+const APP_ID='AccountRegister', VERSION='2.4';
 let LOCK_MIN=0; // 0 = stay signed in until Lock is tapped
 /* ---------- helpers ---------- */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -184,7 +184,9 @@ VIEWS.home=()=>{
       return `<div class="row" data-add="${a.id}" style="cursor:pointer"><div><div class="nm">${esc(a.name)}</div><div class="sub">${esc(a.type)}${pend?` · includes ${pend} phone entr${pend===1?'y':'ies'}`:''}</div></div><div class="num">${money(balance(a))} <span class="muted">&rsaquo;</span></div></div>`; }).join('')}</div>`; }).join('');
   return {html:`<div class="card"><div class="small muted">Net worth</div><div class="big">${money(assets-owed)}</div>
       <div class="two small" style="margin-top:6px"><div>Have <b>${money(assets)}</b></div><div class="num">Owe <b>${money(owed)}</b></div></div>
-      <div class="small muted" style="margin-top:8px">${P.live?'Up to date with your register':'From the register'} saved ${esc(new Date(P.env.saved).toLocaleString())}${w.length?`, plus ${w.length} entr${w.length===1?'y':'ies'} not saved to it yet`:''}.</div></div>
+      <div class="small muted" style="margin-top:8px">${P.live&&!P.stale?'Up to date with your register':'From the register'} saved <b>${esc(new Date(P.env.saved).toLocaleString())}</b>${w.length?`, plus ${w.length} entr${w.length===1?'y':'ies'} not saved to it yet`:''}.</div>
+      ${P.stale?`<div class="note" style="margin-top:10px;background:var(--neg-soft);color:#7a1f16"><b>Your phone has an older copy of your register.</b> OneDrive on this phone is showing the copy saved ${esc(new Date(P.stale.file).toLocaleString())}, but a newer one (saved ${esc(new Date(P.stale.seen).toLocaleString())}) exists. Pocket Register won't save until OneDrive catches up. Your entries are kept on this phone.<br><br>Open the <b>OneDrive</b> app, go to AI Projects → Account Register, pull down to refresh, then come back and tap Refresh.</div>`
+       :(Date.now()-new Date(P.env.saved))>36*3600e3?`<div class="note" style="margin-top:10px">Last saved ${Math.floor((Date.now()-new Date(P.env.saved))/864e5)||1} day(s) ago. If you've used the computer since then and don't see those changes, open the OneDrive app, refresh the Account Register folder, then tap Refresh here.</div>`:''}</div>
     ${dues.length?`<div class="card"><h2>Due in the next 14 days</h2>${dues.map(x=>{ const days=daysBetween(today(),x.d.date); return `<div class="row"><div><div class="nm">${esc(x.a.name)}</div><div class="sub">${days<0?'<span class="tag bad">Past due</span>':days===0?'Due today':`Due ${fmtDate(x.d.date)} · in ${days} day${days===1?'':'s'}`}</div></div><div class="num">${x.d.amt?money(x.d.amt):''}<div class="sub">owed ${money(x.bal)}</div></div></div>`; }).join('')}</div>`:''}
     ${groups}
     ${P.live?`<button class="btn sec" id="hRefresh">Refresh</button>`:P.handle?`<button class="btn" id="hRefresh">Reconnect to your register</button><p class="small muted center">Tap to let Pocket Register save to your register file again.</p>`:`<button class="btn sec" id="hLoad">${FSA?'Connect register file':'Load a newer register file'}</button>`}
@@ -241,7 +243,7 @@ function partyName(r){ return r.counterAccountId?`${r.amount<0?'To':'From'} ${ac
 async function queueOp(op){ P.queue.push({id:'O-'+uid(), created:nowIso(), ...op}); await saveQueue(); }
 async function afterChange(msg){
   closeSheet();
-  if(P.live){ const r=await syncNow(); toast(r.ok?msg:'Saved on this phone. It will go into your register when it can be reached.', r.ok?2600:4500); }
+  if(P.live){ const r=await syncNow(); toast(r.ok?msg:r.stale?'Kept on this phone: your phone has an older copy of the register. See Balances.':'Saved on this phone. It will go into your register when it can be reached.', r.ok?2600:5000); }
   else toast('Saved on this phone. See the Pending tab.');
   render();
 }
@@ -331,7 +333,7 @@ VIEWS.add=()=>{
       const entry={id:'M-'+uid(), created:nowIso(), accountId:$('#aAcct').value, date:$('#aDate').value, amount: st.dir==='out'?-amt:amt,
         payee:T?'':$('#aPayee').value.trim(), counterAccountId:T?$('#aCounter').value:'', category:$('#aCat').value, cls:$('#aCls').value, type:$('#aType').value, memo:$('#aMemo').value.trim()};
       P.queue.push(entry); await saveQueue(); $('#aSave').disabled=true; $('#aSave').textContent='Saving…';
-      if(P.live){ const r=await syncNow(); toast(r.ok?'Saved to your register.':'Saved on this phone. It will go into your register when it can be reached.',r.ok?2600:4500); }
+      if(P.live){ const r=await syncNow(); toast(r.ok?'Saved to your register.':r.stale?'Kept on this phone: your phone has an older copy of the register. See Balances.':'Saved on this phone. It will go into your register when it can be reached.',r.ok?2600:5000); }
       else toast('Saved on this phone. See the Pending tab.');
       if(P.backTo){ P.acct=P.backTo; P.backTo=null; go('acct'); } else go('home'); };
   }};
@@ -381,7 +383,7 @@ async function unlock(){
   $('#lGo').disabled=true; $('#lGo').textContent='Unlocking…';
   P.live=false;
   if(P.handle){ try{ let perm=await P.handle.queryPermission({mode:'readwrite'}); if(perm!=='granted') perm=await P.handle.requestPermission({mode:'readwrite'});
-      if(perm==='granted'){ const env=firstJSON(await (await P.handle.getFile()).text()); if(env&&env.app===APP_ID&&env.data){ P.env=env; P.live=true; await kvSet('regText',JSON.stringify(env)); } } }catch(e){ P.live=false; } }
+      if(perm==='granted'){ const env=firstJSON(await (await P.handle.getFile()).text()); if(env&&env.app===APP_ID&&env.data){ P.env=env; P.live=true; await kvSet('regText',JSON.stringify(env)); await noteSeen(env); } } }catch(e){ P.live=false; } }
   try{ const r=await openRegister(P.env,user,pass); P.data=r.data; P.key=r.key; P.user=user; await kvSet('lastUser',user); P.lastUser=user; }
   catch(e){ await new Promise(z=>setTimeout(z,600)); $('#lErr').textContent=e.message; $('#lGo').disabled=false; $('#lGo').textContent='Unlock'; return; }
   await kvSet('session',{user, key:P.key, at:Date.now()}); try{ localStorage.removeItem('pr-locked'); }catch(e){}   // the key is non-extractable: usable here, never readable
@@ -405,7 +407,7 @@ async function resumeSession(){
   if(LOCK_MIN && Date.now()-(sess.at||0) > LOCK_MIN*60000){ await kvSet('session',null); return false; }
   let env=P.env;
   P.live=false;
-  if(P.handle){ try{ if(await P.handle.queryPermission({mode:'readwrite'})==='granted'){ const e=firstJSON(await (await P.handle.getFile()).text()); if(e&&e.app===APP_ID&&e.data){ env=e; P.live=true; } } }catch(e){} }
+  if(P.handle){ try{ if(await P.handle.queryPermission({mode:'readwrite'})==='granted'){ const e=firstJSON(await (await P.handle.getFile()).text()); if(e&&e.app===APP_ID&&e.data){ env=e; P.live=true; await noteSeen(e); } } }catch(e){} }
   let data; try{ data=JSON.parse(dec.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(env.iv)},sess.key,unb64(env.data)))); }
   catch(e){ if(env!==P.env){ try{ env=P.env; P.live=false; data=JSON.parse(dec.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(env.iv)},sess.key,unb64(env.data)))); }catch(e2){} } }
   if(!data){ await kvSet('session',null); return false; }   // the register's key changed: log in again
@@ -448,6 +450,13 @@ function mergeEntries(d, entries){
   return added;
 }
 function ensureIn(d,k,name){ name=(name||'').trim(); if(!name) return; d.lists[k] ||= []; const L=d.lists[k], hit=L.find(x=>x.name.toLowerCase()===name.toLowerCase()); if(hit){ if(hit.hidden) hit.hidden=false; return; } L.push(k==='payees'?{name,category:'',cls:'',type:'',hidden:false}:{name,hidden:false}); }
+// The newest register version this phone has seen or saved. If the file it reads is older than that, the phone's
+// OneDrive copy is out of date: show it, and never save over it (that could undo changes made elsewhere).
+async function noteSeen(env){
+  const seen=(await kvGet('maxSaved'))||'';
+  if(env.saved && seen && env.saved<seen){ P.stale={file:env.saved, seen}; return true; }
+  P.stale=null; if(env.saved && env.saved>seen) await kvSet('maxSaved',env.saved); return false;
+}
 async function writeRegister(text){
   const size=enc.encode(text).length;
   for(let i=0;i<2;i++){ const w=await P.handle.createWritable({keepExistingData:false}); await w.write(text); try{ await w.truncate(size); }catch(e){} await w.close();
@@ -460,6 +469,7 @@ async function syncNow(interactive=false){
   try{
     if(!P.live){ let perm=await P.handle.queryPermission({mode:'readwrite'}); if(perm!=='granted' && interactive) perm=await P.handle.requestPermission({mode:'readwrite'}); if(perm!=='granted') throw new Error('Allow access to your register file to save.'); P.live=true; }
     const env=firstJSON(await (await P.handle.getFile()).text());
+    if(env && env.app===APP_ID && await noteSeen(env)) throw new Error('STALE');
     if(!env||env.app!==APP_ID||!env.data) throw new Error('Your register file could not be read.');
     let d; try{ d=JSON.parse(dec.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(env.iv)},P.key,unb64(env.data)))); }
     catch(e){ throw new Error('Your register was changed in a way this phone cannot open. Lock and unlock to continue.'); }
@@ -468,11 +478,12 @@ async function syncNow(interactive=false){
     d.txns ||= []; const ops=pendingOps(), applied=applyOps(d.txns, ops, false);
     if(applied){ d.meta.updated=nowIso(); for(const o of ops) if(o.changes){ const c=o.changes; if(c.category) ensureIn(d,'categories',c.category); if(c.cls) ensureIn(d,'classes',c.cls); if(c.type) ensureIn(d,'types',c.type); if(c.payee) ensureIn(d,'payees',c.payee); } }
     let cur=env;
-    if(added||applied){ const sealed=await sealJSON(d,P.key); cur={app:APP_ID,format:2,saved:nowIso(),cipher:'AES-256-GCM',wraps:env.wraps,...sealed}; await writeRegister(JSON.stringify(cur)); }
+    if(added||applied){ const sealed=await sealJSON(d,P.key); cur={app:APP_ID,format:2,saved:nowIso(),cipher:'AES-256-GCM',wraps:env.wraps,...sealed,base:env.saved,by:'Pocket Register '+VERSION}; await writeRegister(JSON.stringify(cur)); await kvSet('maxSaved',cur.saved); }
     P.env=cur; P.data=d; await kvSet('regText',JSON.stringify(cur));
     const done=imported(), opIds=new Set(ops.map(o=>o.id)); const before=P.queue.length; P.queue=P.queue.filter(e=>e.op?!opIds.has(e.id):!done.has(e.id)); if(P.queue.length!==before) await saveQueue();
     return {ok:true, added, applied};
-  }catch(e){ P.syncErr=e.message||String(e); if(/Allow access|NotAllowed/i.test(P.syncErr)) P.live=false; return {ok:false, error:P.syncErr}; }
+  }catch(e){ if(e.message==='STALE'){ P.syncErr='Your phone has an older copy of your register, so nothing was saved yet. Your changes are kept on this phone.'; return {ok:false, stale:true, error:P.syncErr}; }
+    P.syncErr=e.message||String(e); if(/Allow access|NotAllowed/i.test(P.syncErr)) P.live=false; return {ok:false, error:P.syncErr}; }
   finally{ P.syncing=false; }
 }
 /* ---------- send to the computer ---------- */
